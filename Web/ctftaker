@@ -1,0 +1,199 @@
+import { createHash } from "crypto";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import {exit} from "process";
+
+import cookieSession  from "cookie-session";
+import express from "express";
+import { SessionData } from "express-session";
+
+import * as CONST from "./const";
+
+declare module "express-session" {
+  interface SessionData {
+    history: string[];
+    monster: SerializedObj[];
+    player: SerializedObj;
+    coin: number;
+    init: boolean;
+  }
+}
+
+interface SerializedObj {
+  ATK: number;
+  DEF: number;
+  HP: number;
+  factor: number;
+  name: string;
+}
+
+class Obj {
+  ATK: number;
+  DEF: number;
+  HP: number;
+  factor: number;
+  constructor(readonly name: string, factor: number|string, ATK?: number, DEF?: number, HP?: number) {
+    this.factor = factor = parseInt(`${factor}`);
+    this.ATK = ATK ?? factor * Math.random();
+    this.DEF = DEF ?? factor * Math.random();
+    this.HP = HP ?? factor * Math.random();
+  }
+  levepup(factor: number|string) {
+    this.factor = factor = this.factor + parseInt(`${factor}`);
+    this.ATK = factor * Math.random();
+    this.DEF = factor * Math.random();
+    this.HP = factor * Math.random();
+  }
+  fight(obj: Obj): [boolean, string[]] {
+    const his: string[] = [`${this.name}向${obj.name}发起了对战！`];
+    let selfHp = this.HP;
+    let objHp = obj.HP;
+    his.push(`${this.name} HP：${selfHp}；${obj.name} HP：${objHp}`);
+    while(true) {
+      objHp -= this.ATK - obj.DEF;
+      objHp = Math.max(objHp, 0);
+      his.push(`${this.name}向${obj.name}发起攻击！`);
+      his.push(`${this.name} HP：${selfHp}；${obj.name} HP：${objHp}`);
+      if(objHp === 0) break;
+      selfHp -= obj.ATK - this.DEF;
+      selfHp = Math.max(selfHp, 0);
+      his.push(`${obj.name}向${this.name}发起攻击！`);
+      his.push(`${this.name} HP：${selfHp}；${obj.name} HP：${objHp}`);
+      if(selfHp === 0) break;
+    }
+    return [selfHp > 0, his];
+  }
+  static serialize(obj: Obj): SerializedObj {
+    return {
+      ATK: obj.ATK,
+      DEF: obj.DEF,
+      HP: obj.HP,
+      factor: obj.factor,
+      name: obj.name,
+    };
+  }
+  static deserialzie(obj: SerializedObj): Obj {
+    return new Obj(obj.name, obj.factor, obj.ATK, obj.DEF, obj.HP);
+  }
+}
+
+const app = express();
+app.use(express.static(resolve("static")));
+app.use(express.json());
+app.use(express.urlencoded({extended: true}));
+const secret = createHash("md5").update(`${Math.random()}`).digest("hex");
+app.use(cookieSession({
+  secret: secret,
+  name: "session",
+}));
+
+console.log(secret);
+
+function initSession(session: any): session is SessionData {
+  if(!session.init) {
+    session.history = [];
+    session.player = new Obj("Player", 0);
+    session.coin = 1;
+    session.init = true;
+    session.monster = [
+      Obj.serialize(new Obj("BabyCalc", 1)),
+      Obj.serialize(new Obj("MediumCalc", 2)),
+      Obj.serialize(new Obj("HardCalc", 5)),
+      Obj.serialize(new Obj("GodCalc", 10)),
+      Obj.serialize(new Obj("ImpossibleCalc", 100)),
+      Obj.serialize(new Obj("TotalImpossibleCalc", 1000)),
+      Obj.serialize(new Obj("????????Calc", 10000)),
+    ];
+  }
+  return true;
+}
+
+app.use((req, res, next) => {
+  initSession(req.session);
+  next();
+});
+
+app.get("/his", (req, res) => {
+  if(!initSession(req.session)) return;
+  res.send({
+    message: req.session.history.join("\n"),
+  });
+});
+
+app.get("/start", (req, res) => {
+  if(!initSession(req.session)) return;
+  req.session.history = req.session.history.concat(CONST.banner);
+  res.send({
+    message: CONST.banner.join("\n"),
+  });
+});
+
+app.post("/levelup", (req, res) => {
+  if(!initSession(req.session)) return;
+  const {f} = req.body;
+  if(!f || f > req.session.coin) {
+    return res.send({message: "不大对呢"});
+  }
+  req.session.coin -= f;
+  const player = Obj.deserialzie(req.session.player);
+  if(player.factor > 50) {
+    return res.send({message: "你太强了，寻找更多的机遇吧"});
+  }
+  player.levepup(f);
+  req.session.player = Obj.serialize(player);
+  const msg = `${player.name}使用了${f}枚硬币升级了自己
+  现在的状态：ATK：${player.ATK}，DEF：${player.DEF}，HP：${player.HP}，COIN：${req.session.coin}枚，还剩${req.session.monster.length}个题`.split("\n");
+  req.session.history = req.session.history.concat(msg);
+  res.send({message: msg.join("\n")});
+});
+
+app.get("/monster", (req, res) => {
+  if(!initSession(req.session)) return;
+  if(req.session.monster.length===0) {
+    return res.send({message: CONST.footer.join("\n")});
+  }
+  const monster = Obj.deserialzie(req.session.monster[0]);
+  res.send({
+    message: `${monster.name}出现了！ATK：${monster.ATK}，DEF：${monster.DEF}，HP：${monster.HP}`,
+  });
+});
+
+app.get("/status", (req, res) => {
+  if(!initSession(req.session)) return;
+  const player = Obj.deserialzie(req.session.player);
+  res.send({message: `${player.name}现在的状态：ATK：${player.ATK}，DEF：${player.DEF}，HP：${player.HP}，COIN：${req.session.coin}枚，还剩${req.session.monster.length}个题`});
+});
+
+app.get("/fight", (req, res) => {
+  if(!initSession(req.session)) return;
+  if(req.session.monster.length===0) {
+    return res.send({message: CONST.footer.join("\n")});
+  }
+  const player = Obj.deserialzie(req.session.player);
+  const monster = Obj.deserialzie(req.session.monster[0]);
+  const [win, his] = player.fight(monster);
+  if(win) {
+    req.session.monster = req.session.monster.slice(1);
+    his.push("你赢了耶！");
+  } else {
+    his.push("你输了，刷新以重新开始");
+    req.session.init = false;
+  }
+  req.session.history = req.session.history.concat(his);
+  res.send({message: his.join("\n")});
+});
+
+app.get("/source", (req, res) => {
+  res.send(readFileSync("./src/main.ts"));
+});
+
+app.get("/exit", (req, res) => {
+  exit(0);
+});
+
+app.use((err: any, req: any, res: any) => {
+  console.error(err.stack);
+  res.status(500).send("Something broke!");
+});
+
+app.listen(80);
